@@ -1,0 +1,4 @@
+python-telegram-bot==20.3
+python-telegram-bot[ext]==20.3  # Включает все расширения
+python-telegram-bot[job-queue]
+aiohttp==3.9.5

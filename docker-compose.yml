@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  telegram-bot:
+    build: .
+    container_name: telegram-bot
+    restart: unless-stopped
+    volumes:
+      - ./quotes.txt:/app/quotes.txt
+    environment:
+      - TOKEN=ваш_токен_бота  # Замените на реальный токен!
+      - CHAT_ID=ваш_chat_id    # И этот тоже
