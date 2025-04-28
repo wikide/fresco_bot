@@ -4,10 +4,12 @@
 import os
 import random
 import asyncio
+import speech_recognition as sr  # Важно: импортируем с алиасом sr
 import aiohttp  # для запросов к API
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
+from pydub import AudioSegment
 
 load_dotenv()  # Загружаем переменные из .env
 
@@ -15,6 +17,7 @@ load_dotenv()  # Загружаем переменные из .env
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 STABLEHORDE_API_KEY = os.getenv('STABLEHORDE_API_KEY')
+HF_API_KEY = os.getenv('HF_API_KEY')
 
 # Проверяем, что токены загружены
 if not all([TELEGRAM_TOKEN, OPENROUTER_API_KEY, STABLEHORDE_API_KEY]):
@@ -57,30 +60,39 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = await ask_openrouter(question, system_prompt)
     await context.bot.send_message(chat_id=chat_id, text=reply)
 
-# Добавьте новые функции:
 async def img(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not context.args:
-        # Детализированный промпт для проекта Венеры
-        prompt = """
-        Futuristic city from Jacque Fresco's Venus Project,
-        white domed buildings with glass facades,
-        solar panels on roofs, magnetic transport systems,
-        green parks integrated into architecture,
-        clean energy, utopian society,
-        bright colors, sunny sky,
-        sci-fi aesthetic, highly detailed, 8K,
-        style by Syd Mead and Moebius
-        """
-    else:
-        prompt = " ".join(context.args)
-
+    # Стандартный промпт для проекта Венеры (на английском)
+    default_prompt = """
+    Futuristic city from Jacque Fresco's Venus Project,
+    white domed buildings with glass facades,
+    solar panels on roofs, magnetic transport systems,
+    green parks integrated into architecture,
+    clean energy, utopian society,
+    bright colors, sunny sky,
+    sci-fi aesthetic, highly detailed, 8K,
+    style by Syd Mead and Moebius
+    """
+    
     chat_id = update.effective_chat.id
-
-    # Сообщаем пользователю о начале генерации
+    
+    # Если пользователь не указал запрос - используем стандартный промпт
+    if not context.args:
+        prompt = default_prompt
+    else:
+        # Переводим пользовательский запрос на английский
+        user_text = ' '.join(context.args)
+        system_prompt = "Переведи этот текст на английский без пояснений. Только перевод."
+        try:
+            translated_text = await ask_openrouter(user_text, system_prompt)
+            prompt = translated_text if translated_text else default_prompt
+        except Exception as e:
+            print(f"Ошибка перевода: {e}")
+            prompt = default_prompt
+    
+    # Уведомляем пользователя
     await update.message.reply_text("🔄 Изображение генерируется... Я пришлю его, как только будет готово!")
-
-    # Запускаем генерацию в фоне (не блокируя бота)
+    
+    # Запускаем генерацию
     asyncio.create_task(
         generate_and_notify(prompt, chat_id, context)
     )
@@ -160,6 +172,35 @@ async def ask_openrouter(question, system_prompt):
             except (KeyError, IndexError):
                 return "Не удалось получить ответ от модели."
 
+async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перевод текста через OpenRouter (/translate <текст>)"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите текст для перевода: /translate Привет!")
+        return
+
+    text = ' '.join(context.args)
+    system_prompt = "Переведи текст на английский без пояснений. Только перевод."
+    translated = await ask_openrouter(text, system_prompt)
+    await update.message.reply_text(f"🌍 Перевод:\n{translated}")
+
+async def voice_to_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    voice_file = await context.bot.get_file(update.message.voice.file_id)
+    audio_bytes = await voice_file.download_as_bytearray()
+
+    text = await transcribe_audio(audio_bytes)
+    await update.message.reply_text(f"🔊 Текст:\n{text}")
+
+async def transcribe_audio(audio_bytes: bytes) -> str:
+    API_URL = "https://api-inference.huggingface.co/models/openai/whisper-tiny"
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"} 
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(API_URL, headers=headers, data=audio_bytes) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                return result.get("text", "")
+    return "Не удалось распознать речь."
+
 async def generate_image(prompt: str, api_key: str) -> str:
     url = "https://stablehorde.net/api/v2/generate/async"
     headers = {
@@ -214,22 +255,92 @@ async def generate_image(prompt: str, api_key: str) -> str:
             
             return result["generations"][0]["img"]
 
+async def voice_to_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик голосовых сообщений с командами"""
+    if not update.message.voice:
+        await update.message.reply_text("❌ Это не голосовое сообщение!")
+        return
+
+    try:
+        # Скачиваем голосовое сообщение
+        voice_file = await context.bot.get_file(update.message.voice.file_id)
+        await voice_file.download_to_drive("voice_message.ogg")
+
+        # Конвертируем в текст
+        recognized_text = await convert_voice_to_text("voice_message.ogg")
+
+        # Обрабатываем команды из текста
+        if recognized_text.lower().startswith('переведи текст'):
+            text_to_translate = recognized_text[14:].strip()
+            if text_to_translate:
+                translated = await ask_openrouter(text_to_translate, "Переведи этот текст на английский без пояснений. Только перевод.")
+                await update.message.reply_text(f"🌍 Перевод:\n{translated}")
+            else:
+                await update.message.reply_text("❌ Укажите текст для перевода после 'переведи текст'")
+
+        elif recognized_text.lower().startswith('нарисуй'):
+            prompt = recognized_text[7:].strip()
+            if not prompt:
+                prompt = "Футуристический город проекта Венера"
+
+            # Вызываем функцию img с промптом
+            context.args = prompt.split()  # Эмулируем аргументы команды
+            await img(update, context)
+
+        elif recognized_text.lower().startswith('ответь мне'):
+            question = recognized_text[9:].strip()
+            if question:
+                context.args = [question]  # Эмулируем аргументы команды
+                await ask(update, context)
+            else:
+                await update.message.reply_text("❌ Задайте вопрос после 'ответь мне'")
+
+        else:
+            await update.message.reply_text(f"🎤 Распознанный текст:\n{recognized_text}\n\nℹ️ Попробуйте начать с команд:\n- 'переведи текст...'\n- 'нарисуй...'\n- 'ответь мне...'")
+
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
+    finally:
+        if os.path.exists("voice_message.ogg"):
+            os.remove("voice_message.ogg")
+
+async def convert_voice_to_text(voice_path: str) -> str:
+    """Конвертирует голосовое сообщение в текст"""
+    recognizer = sr.Recognizer()
+
+    try:
+        # Конвертируем .ogg в .wav
+        audio = AudioSegment.from_ogg(voice_path)
+        audio.export("temp.wav", format="wav")
+
+        # Распознаём текст
+        with sr.AudioFile("temp.wav") as source:
+            audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data, language="ru-RU")
+            return text
+    except sr.UnknownValueError:
+        return "Не удалось распознать речь 😢"
+    except Exception as e:
+        return f"Ошибка распознавания: {str(e)}"
+ 
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    application.add_handler(CommandHandler("quote", quote))
-    application.add_handler(CommandHandler("q", quote))
-    application.add_handler(CommandHandler("ask", ask))
-    application.add_handler(CommandHandler("a", ask))
-    application.add_handler(CommandHandler("img", img))
-    application.add_handler(CommandHandler("i", img))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("h", help_command))
-    application.add_handler(CommandHandler("voladores", voladores))
+    # Команды
+    commands = [
+        ("help", help_command), ("h", help_command),
+        ("quote", quote), ("q", quote),
+        ("ask", ask), ("a", ask),
+        ("img", img), ("i", img),
+        ("voladores", voladores),
+        ("translate", translate_text), ("t", translate_text),  # Новое!
+    ]
+    for cmd, handler in commands:
+        application.add_handler(CommandHandler(cmd, handler))
 
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    )
+    # Обработчики сообщений
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.VOICE, voice_to_text_handler))
 
     application.run_polling()
 
