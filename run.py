@@ -4,6 +4,7 @@
 import os
 import random
 import asyncio
+import yt_dlp
 import speech_recognition as sr  # Важно: импортируем с алиасом sr
 import aiohttp  # для запросов к API
 from telegram import Update
@@ -34,11 +35,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /ask [вопрос] - Задать вопрос боту (например: /ask Что такое проект Венеры?)
 /donate - Поддержать разработчика
 
+🎧 *Музыкальные команды:*
+/play [название] - Найти и отправить трек (из YouTube)
+
+💡 Совет: Для лучшего качества указывайте исполнителя в запросе:
+Пример: /play Pink Floyd - Time
+
 🎤 *Голосовые команды:*
 Можно отправлять голосовые сообщения вместо текста:
 - "переведи текст [текст]" - перевод на английский
 - "нарисуй [описание]" - генерация изображения
 - "ответь мне [вопрос]" - ответ на вопрос
+- "Найди трек [название]" - поиск и воспроизведение музыки
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -332,6 +340,15 @@ async def voice_to_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             context.args = prompt.split()  # Эмулируем аргументы команды
             await img(update, context)
 
+        elif recognized_text.lower().startswith('найди трек'):
+            query = recognized_text[10:].strip()  # Убираем "найди трек"
+            if query:
+                # Используем существующую функцию play_music
+                context.args = query.split()  # Имитируем аргументы команды
+                await play_music(update, context)
+            else:
+                await update.message.reply_text("Укажите название трека после 'найди трек'")
+
         elif recognized_text.lower().startswith('ответь мне'):
             question = recognized_text[9:].strip()
             if question:
@@ -341,7 +358,7 @@ async def voice_to_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 await update.message.reply_text("❌ Задайте вопрос после 'ответь мне'")
 
         else:
-            await update.message.reply_text(f"🎤 Распознанный текст:\n{recognized_text}\n\nℹ️ Попробуйте начать с команд:\n- 'переведи текст...'\n- 'нарисуй...'\n- 'ответь мне...'")
+            await update.message.reply_text(f"🎤 Распознанный текст:\n{recognized_text}\n\nℹ️ Попробуйте начать с команд:\n- 'переведи текст...'\n- 'нарисуй...'\n- 'ответь мне...''\n- 'найди трек...'")
 
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
@@ -386,6 +403,74 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 """
     await update.message.reply_text(donate_text, parse_mode='Markdown')
 
+
+async def play_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Укажите название трека: /play <название>")
+        return
+
+    query = ' '.join(context.args)
+    await update.message.reply_text(f"🔍 Ищу трек: {query}...")
+
+    try:
+        # Создаем папку downloads если ее нет
+        os.makedirs('downloads', exist_ok=True)
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'default_search': 'ytsearch',
+            'noplaylist': True,
+            'quiet': True,
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+            }],
+            'retries': 3,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch:{query}", download=True)
+
+            if not info or not info.get('entries'):
+                await update.message.reply_text("Трек не найден")
+                return
+
+            # Получаем реальный путь к файлу
+            original_filename = ydl.prepare_filename(info['entries'][0])
+            audio_file = os.path.splitext(original_filename)[0] + '.mp3'
+
+            # Ждем пока файл появится (макс 10 сек)
+            for _ in range(10):
+                if os.path.exists(audio_file):
+                    break
+                await asyncio.sleep(1)
+            else:
+                raise Exception("Файл не был создан")
+
+            # Проверяем размер файла
+            if not os.path.exists(audio_file) or os.path.getsize(audio_file) < 1024:
+                raise Exception("Неверный размер файла")
+
+            # Отправляем аудио
+            with open(audio_file, 'rb') as audio:
+                await update.message.reply_audio(
+                    audio=audio,
+                    title=info['entries'][0].get('title', query),
+                    performer=info['entries'][0].get('uploader', 'Unknown Artist')
+                )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        print(f"Error: {traceback.format_exc()}")
+
+    finally:
+        # Удаляем временные файлы
+        if 'original_filename' in locals() and os.path.exists(original_filename):
+            os.remove(original_filename)
+        if 'audio_file' in locals() and os.path.exists(audio_file):
+            os.remove(audio_file)
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -397,6 +482,7 @@ def main():
         ("img", img), ("i", img),
         ("translate", translate_text), ("t", translate_text),
         ("donate", donate), ("d", donate),
+        ("play", play_music), ("p", play_music)
     ]
     for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))
