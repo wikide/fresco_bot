@@ -32,6 +32,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /quote - Получить случайную цитату
 /img - Сгенерировать изображение проекта Венеры
 /ask [вопрос] - Задать вопрос боту (например: /ask Что такое проект Венеры?)
+/donate - Поддержать разработчика
+
+🎤 *Голосовые команды:*
+Можно отправлять голосовые сообщения вместо текста:
+- "переведи текст [текст]" - перевод на английский
+- "нарисуй [описание]" - генерация изображения
+- "ответь мне [вопрос]" - ответ на вопрос
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -97,30 +104,13 @@ async def img(update: Update, context: ContextTypes.DEFAULT_TYPE):
         generate_and_notify(prompt, chat_id, context)
     )
 
-async def voladores(update: Update, context: ContextTypes.DEFAULT_TYPE):
-                
-    if not context.args:
-        # Детализированный промпт для проекта Венеры
-        prompt = """
-        A swarm of shadowy, smoke-like creatures with elongated, ragged forms, drifting like dark rags in the wind. Their forms range from spider-like, stingray-like, to abstract, with blank, glowing eyes or featureless voids for faces. They move in an eerie, synchronized flow, exuding a predatory hunger. The background is a desolate, twilight desert or a dim, dream-like void, heightening their otherworldly menace. The atmosphere is thick with dread—these are parasitic creatures, almost invisible, yet palpably draining. Ethereal, surreal, and deeply unsettling, rendered in hyper-detailed realism with a muted, eerie color palette
-        """     
-    else:   
-        prompt = " ".join(context.args)
-
-    chat_id = update.effective_chat.id
-    
-    # Сообщаем пользователю о начале генерации
-    await update.message.reply_text("🔄 Изображение генерируется... Я пришлю его, как только будет готово!")
-    
-    # Запускаем генерацию в фоне (не блокируя бота)
-    asyncio.create_task(
-        generate_and_notify(prompt, chat_id, context)
-    )   
-
-async def generate_and_notify(prompt: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+async def generate_and_notify(prompt: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE, two=None):
     """Фоновая задача: генерирует изображение и отправляет результат."""
     try:
-        image_url = await generate_image(prompt, STABLEHORDE_API_KEY)
+        if two is None:
+            image_url = await generate_image(prompt, STABLEHORDE_API_KEY)
+        else:
+            image_url = await generate_image2(prompt, STABLEHORDE_API_KEY)
 
         if image_url.startswith("http"):
             await context.bot.send_photo(chat_id=chat_id, photo=image_url)
@@ -255,6 +245,61 @@ async def generate_image(prompt: str, api_key: str) -> str:
             
             return result["generations"][0]["img"]
 
+async def generate_image2(prompt: str, api_key: str) -> str:
+    url = "https://stablehorde.net/api/v2/generate/async"
+    headers = {
+        "Content-Type": "application/json",
+        "apikey": api_key,  # Ваш ключ!
+        "Client-Agent": "my-telegram-bot/1.0"  # Укажите свой клиент
+    }
+
+    payload = {
+        "prompt": prompt,  # Передаём ОДИН чёткий промпт
+        "params": {
+            "width": 640,
+            "height": 320,
+            "steps": 40,  # Увеличили для лучшей детализации
+            "n": 1,
+            "cfg_scale": 10,  # Сильнее следовать промпту (7-12)
+        },
+        "models": ["CyberRealistic", "NeverEnding Dream"]
+    }
+
+    async with aiohttp.ClientSession() as session:
+        # (1) Запускаем генерацию
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 202:
+                error = await resp.text()
+                return f"🚫 Ошибка API: {resp.status} | {error}"
+
+            data = await resp.json()
+            task_id = data["id"]
+
+        # (2) Проверяем статус каждые 5 секунд
+        check_url = f"https://stablehorde.net/api/v2/generate/check/{task_id}"
+        for _ in range(30):  # 30 попыток (~2.5 минуты)
+            await asyncio.sleep(5)
+            async with session.get(check_url, headers=headers) as check_resp:
+                if check_resp.status != 200:
+                    return f"Ошибка проверки статуса: {check_resp.status}"
+
+                status = await check_resp.json()
+                if status["done"]:
+                    break
+
+        # (3) Получаем результат
+        result_url = f"https://stablehorde.net/api/v2/generate/status/{task_id}"
+        async with session.get(result_url, headers=headers) as result_resp:
+            if result_resp.status != 200:
+                return "Ошибка при получении изображения."
+
+            result = await result_resp.json()
+            if not result.get("generations"):
+                return "Изображение не сгенерировано."
+
+            return result["generations"][0]["img"]
+
+
 async def voice_to_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик голосовых сообщений с командами"""
     if not update.message.voice:
@@ -322,7 +367,25 @@ async def convert_voice_to_text(voice_path: str) -> str:
         return "Не удалось распознать речь 😢"
     except Exception as e:
         return f"Ошибка распознавания: {str(e)}"
- 
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет информацию для донатов"""
+    donate_text = """
+💎 *Поддержать разработчика*
+
+Если вам нравится бот и вы хотите поддержать его развитие, вы можете отправить донат в USDT (TRC20):
+
+🔹 Присоединиться к [чату разработчиков](https://t.me/+Et1vrcDMRmkxNzcy)
+
+🔹 *Кошелек USDT (TRC20):* 
+
+```TREqCkanrRjkRQ3PUHsowCtHAqFJ9kaaL1```
+
+Спасибо за вашу поддержку! 🙏
+
+Связаться с разработчиками можно тут: https://t.me/+Et1vrcDMRmkxNzcy
+"""
+    await update.message.reply_text(donate_text, parse_mode='Markdown')
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -332,8 +395,8 @@ def main():
         ("quote", quote), ("q", quote),
         ("ask", ask), ("a", ask),
         ("img", img), ("i", img),
-        ("voladores", voladores),
-        ("translate", translate_text), ("t", translate_text),  # Новое!
+        ("translate", translate_text), ("t", translate_text),
+        ("donate", donate), ("d", donate),
     ]
     for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))
