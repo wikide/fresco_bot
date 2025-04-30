@@ -9,9 +9,14 @@ import speech_recognition as sr  # Важно: импортируем с али�
 import aiohttp  # для запросов к API
 import time
 import traceback
+import re
+import uuid
+import edge_tts
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
+from pydub import AudioSegment
+from gtts import gTTS
 from pydub import AudioSegment
 
 load_dotenv()  # Загружаем переменные из .env
@@ -39,21 +44,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 🎧 *Музыкальные команды:*
 /play [название] - Найти и отправить трек (из YouTube)
+/find [описание] - Найти музыку по описанию настроения (например: /find грустный джаз)
 
 💡 Совет: Для лучшего качества указывайте исполнителя в запросе:
 Пример: /play Pink Floyd - Time
 
 📹 *Видео команды:*
-/download <url> - Скачать видео с YouTube (до 50MB)
-Просто отправьте ссылку на YouTube - бот автоматически предложит скачать
+/youtube <url> - Скачать видео с YouTube (до 50MB)
 /twitter <url> - видео из Twitter/X
+/tiktok <url> - видео из Tiktok
 
 🎤 *Голосовые команды:*
+/say [текст] - Озвучить текст мужским голосом (только аудио)
+
 Можно отправлять голосовые сообщения вместо текста:
 - "переведи текст [текст]" - перевод на английский
 - "нарисуй [описание]" - генерация изображения
 - "ответь мне [вопрос]" - ответ на вопрос
 - "Найди трек [название]" - поиск и воспроизведение музыки
+- "Скажи" - озвучить голосовое сообщение
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -139,7 +148,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Автоопределение YouTube ссылок
     if "youtube.com" in update.message.text or "youtu.be" in update.message.text:
         context.args = [update.message.text]
-        await download_video(update, context)
+        await download_youtube(update, context)
         return
 
     is_reply_to_bot = (
@@ -371,6 +380,16 @@ async def voice_to_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 await update.message.reply_text("❌ Задайте вопрос после 'ответь мне'")
 
+        # Обрабатываем команду "скажи"
+        elif recognized_text.lower().startswith('скажи'):
+            query = recognized_text[5:].strip()
+            if query:
+                # Эмулируем команду /voice
+                context.args = [query]
+                await send_voice_message(update, context)
+            else:
+                await update.message.reply_text("❌ Укажите, что сказать после 'скажи'")
+
         else:
             await update.message.reply_text(f"🎤 Распознанный текст:\n{recognized_text}\n\nℹ️ Попробуйте начать с команд:\n- 'переведи текст...'\n- 'нарисуй...'\n- 'ответь мне...''\n- 'найди трек...'")
 
@@ -485,7 +504,7 @@ async def play_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'audio_file' in locals() and os.path.exists(audio_file):
             os.remove(audio_file)
 
-async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def download_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Укажите URL YouTube видео: /download <url>")
         return
@@ -588,49 +607,62 @@ async def download_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
 
-
 async def vk_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Укажите URL плейлиста VK: /vk_playlist <url>")
-        return
-
-    url = context.args[0]
-    if "vk.com" not in url or "audio_playlist" not in url:
-        await update.message.reply_text(
-            "Укажите корректную ссылку на плейлист VK (пример: https://vk.com/audio?section=playlists&z=audio_playlist_12345_56789)")
-        return
-
     try:
-        msg = await update.message.reply_text("🔍 Получаю информацию о плейлисте...")
+        if not context.args:
+            await update.message.reply_text("❌ Укажите URL плейлиста VK после команды")
+            return
 
-        # Настройки для VK
+        url = context.args[0]
+
+        # Проверка и преобразование ссылки
+        if "vk.com/music/playlist/" in url:
+            parts = url.split('/')
+            owner_id = parts[-2].split('_')[0]
+            playlist_id = parts[-2].split('_')[1]
+            new_url = f"https://vk.com/audio?act=audio_playlist{owner_id}_{playlist_id}"
+            await update.message.reply_text(f"🔗 Преобразованная ссылка: {new_url}")
+            url = new_url
+
+        if "audio_playlist" not in url:
+            await update.message.reply_text(
+                "⚠️ Это не ссылка на плейлист VK! Пример правильной ссылки:\nhttps://vk.com/audio?section=playlists&z=audio_playlist_123_456")
+            return
+
+        msg = await update.message.reply_text("🔍 Ищу плейлист... Это может занять до 1 минуты...")
+
         ydl_opts = {
-            'extract_flat': True,
-            'dump_single_json': True,
+            'extract_flat': 'in_playlist',
             'quiet': True,
             'force_generic_extractor': True,
+            'cookiefile': 'cookies.txt',  # Рекомендуется для VK
+            'extractor_args': {
+                'vk': {
+                    'username': 'ваш_логин',  # Опционально
+                    'password': 'ваш_пароль'  # Опционально
+                }
+            }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
             if not info or not info.get('entries'):
-                await msg.edit_text("❌ Не удалось получить плейлист или плейлист пуст")
+                await msg.edit_text(
+                    "😢 Не удалось получить плейлист. Возможные причины:\n1. Плейлист приватный\n2. Требуется авторизация\n3. VK заблокировал запрос")
                 return
 
-            # Исправленная строка:
-            await msg.edit_text(f"🎵 Найдено треков: {len(info['entries'])}\nНачинаю загрузку...")
+            await msg.edit_text(f"🎵 Найдено треков: {len(info['entries'])}\nСкачиваю первые 3 трека...")
 
-            # Загружаем каждый трек
-            for idx, entry in enumerate(info['entries'][:10]):  # Ограничим 10 треками
+            for entry in info['entries'][:3]:  # Ограничение для теста
                 try:
-                    track_info = f"{entry.get('artist', '?')} - {entry.get('title', 'Без названия')}"
-                    await msg.edit_text(f"⏬ [{idx + 1}/{len(info['entries'])}] {track_info}")
+                    track_title = f"{entry.get('artist', '?')} - {entry.get('title', 'Без названия')}"
+                    await msg.edit_text(f"⬇️ Загружаю: {track_title}")
 
-                    # Настройки для скачивания аудио
                     audio_opts = {
                         'format': 'bestaudio/best',
                         'outtmpl': f"downloads/{entry['id']}.%(ext)s",
+                        'quiet': True,
                         'postprocessors': [{
                             'key': 'FFmpegExtractAudio',
                             'preferredcodec': 'mp3',
@@ -649,20 +681,187 @@ async def vk_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         os.remove(audio_file)
 
                 except Exception as e:
-                    print(f"Ошибка загрузки трека: {e}")
+                    await update.message.reply_text(f"❌ Ошибка загрузки трека: {str(e)}")
                     continue
 
-        await msg.edit_text("✅ Плейлист успешно загружен!")
+        await msg.edit_text("✅ Готово! Для скачивания полного плейлиста используйте VPN или повторите позже")
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"🔥 Критическая ошибка: {str(e)}\nПопробуйте другой плейлист или повторите позже")
+async def download_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите ссылку на TikTok видео после команды\nПример: /tiktok https://vm.tiktok.com/ZM6example/")
+        return
+
+    url = context.args[0]
+
+    # Проверка валидности ссылки
+    #if not re.match(r'https?://(vm\.tiktok\.com|www\.tiktok\.com)/', url):
+    #    await update.message.reply_text("⚠️ Это не ссылка на TikTok видео!")
+    #    return
+
+    try:
+        msg = await update.message.reply_text("⏳ Скачиваю видео с TikTok...")
+
+        ydl_opts = {
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'quiet': True,
+            'merge_output_format': 'mp4',
+            'extractor_args': {
+                'tiktok': {
+                    'headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                }
+            }
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+            # Отправка видео
+            await update.message.reply_video(
+                video=open(filename, 'rb'),
+                caption=f"🎵 {info.get('title', 'Видео с TikTok')}\n\n🔗 {url}",
+                supports_streaming=True
+            )
 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        print(f"TikTok download error: {traceback.format_exc()}")
 
     finally:
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
         if 'msg' in locals():
             try:
                 await msg.delete()
             except:
                 pass
+
+async def send_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажите текст после команды\nПример: /voice Привет, как дела?")
+        return
+
+    user_text = ' '.join(context.args)
+    processing_msg = await update.message.reply_text("🔊 Генерация голосового ответа...")
+
+    try:
+        # 1. Получаем ответ от модели (без отправки текста)
+        system_prompt = "Ты эксперт по проекту Венера. Отвечай кратко (до 2 предложений)."
+        ai_response = await ask_openrouter(user_text, system_prompt)
+
+        # 2. Синтезируем голос (мужской)
+        voice_file = await text_to_speech(ai_response)
+
+        # 3. Отправляем ТОЛЬКО голосовое сообщение
+        await context.bot.send_voice(
+            chat_id=update.effective_chat.id,
+            voice=open(voice_file, 'rb'),
+            reply_to_message_id=update.message.message_id
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка генерации: {str(e)}")
+
+    finally:
+        if 'voice_file' in locals() and os.path.exists(voice_file):
+            os.remove(voice_file)
+        if processing_msg:
+            await processing_msg.delete()
+
+async def text_to_speech(text: str) -> str:
+    """Синтез мужского голоса через edge-tts"""
+    filename = f"voice_{uuid.uuid4()}.mp3"
+    try:
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice="ru-RU-DmitryNeural",  # Мужской голос
+            rate="+10%"  # Слегка ускоряем речь
+        )
+        await communicate.save(filename)
+        return filename
+    except Exception as e:
+        if os.path.exists(filename):
+            os.remove(filename)
+        raise RuntimeError(f"Ошибка синтеза голоса: {e}")
+
+async def find_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажите описание музыки\nПример: /find грустный джаз для вечера")
+        return
+
+    user_request = ' '.join(context.args)
+    processing_msg = await update.message.reply_text("🔍 Ищу подходящую музыку...")
+
+    try:
+        # 1. Запрашиваем треки у LLM
+        tracks = await get_tracks_from_llm(user_request)
+        found = False
+
+        # 2. Пробуем каждый трек до первого успешного
+        for i, track in enumerate(tracks, 1):
+            try:
+                await processing_msg.edit_text(
+                    f"🔎 Пробую трек {i}/{len(tracks)}: {track}"
+                )
+
+                # 3. Пытаемся воспроизвести
+                context.args = [track]
+                await play_music(update, context)
+                found = True
+                break
+
+            except Exception as e:
+                print(f"Ошибка воспроизведения {track}: {str(e)}")
+                continue
+
+        # 4. Если ни один не сработал
+        if not found:
+            await update.message.reply_text(
+                "😢 Не удалось найти ни один из треков\n"
+                "Попробуйте другой запрос или уточните параметры"
+            )
+
+            # Отправляем список что пробовали (для прозрачности)
+            tracks_list = "\n".join(f"• {t}" for t in tracks)
+            await update.message.reply_text(
+                f"Пробовали найти:\n{tracks_list}"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Критическая ошибка: {str(e)}")
+
+    finally:
+        if processing_msg:
+            await processing_msg.delete()
+async def get_tracks_from_llm(user_request: str) -> list:
+    """Получаем список треков от LLM"""
+    prompt = f"""Ты музыкальный эксперт. Пользователь просит: "{user_request}".
+Предложи ровно 5 конкретных треков в формате:
+1. Исполнитель - Название трека
+2. Исполнитель - Название трека
+...
+Только список, без пояснений!"""
+
+    response = await ask_openrouter(prompt, system_prompt="")
+
+    # Парсим ответ
+    tracks = []
+    for line in response.split('\n'):
+        if '-' in line and any(char.isdigit() for char in line[:3]):
+            track = line.split('. ')[-1].strip()
+            tracks.append(track)
+
+    if not tracks:
+        raise ValueError("Не удалось распознать треки в ответе")
+
+    return tracks[:5]  # Берем первые 5 на случай если LLM вернула больше
 
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -676,9 +875,12 @@ def main():
         ("translate", translate_text), ("t", translate_text),
         ("donate", donate), ("d", donate),
         ("play", play_music), ("p", play_music),
-        ("download", download_video),
+        ("youtube", download_youtube),
         ("twitter", download_twitter),
-        ("vk_playlist", vk_playlist)
+        ("tiktok", download_tiktok),
+        ("vk_playlist", vk_playlist),
+        ("say", send_voice_message),
+        ("find", find_music)
     ]
     for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))

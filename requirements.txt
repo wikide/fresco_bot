@@ -1,4 +1,11 @@
-python-telegram-bot==20.3
-python-telegram-bot[ext]==20.3  # Включает все расширения
-python-telegram-bot[job-queue]
+python-telegram-bot[ext]==20.3
 aiohttp==3.9.5
+python-dotenv
+SpeechRecognition==3.10.0
+pydub==0.25.1
+ffmpeg-python==0.2.0
+openai==1.12.0
+numpy==1.26.4
+gTTS==2.4.0  # Добавляем gTTS
+edge-tts==6.1.3
+pydub==0.25.1
