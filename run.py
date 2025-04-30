@@ -7,6 +7,8 @@ import asyncio
 import yt_dlp
 import speech_recognition as sr  # Важно: импортируем с алиасом sr
 import aiohttp  # для запросов к API
+import time
+import traceback
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -40,6 +42,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 💡 Совет: Для лучшего качества указывайте исполнителя в запросе:
 Пример: /play Pink Floyd - Time
+
+📹 *Видео команды:*
+/download <url> - Скачать видео с YouTube (до 50MB)
+Просто отправьте ссылку на YouTube - бот автоматически предложит скачать
+/twitter <url> - видео из Twitter/X
 
 🎤 *Голосовые команды:*
 Можно отправлять голосовые сообщения вместо текста:
@@ -128,6 +135,13 @@ async def generate_and_notify(prompt: str, chat_id: int, context: ContextTypes.D
         await context.bot.send_message(chat_id=chat_id, text=f"🚫 Ошибка: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    # Автоопределение YouTube ссылок
+    if "youtube.com" in update.message.text or "youtu.be" in update.message.text:
+        context.args = [update.message.text]
+        await download_video(update, context)
+        return
+
     is_reply_to_bot = (
         update.message.reply_to_message
         and update.message.reply_to_message.from_user.id == context.bot.id
@@ -471,6 +485,185 @@ async def play_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'audio_file' in locals() and os.path.exists(audio_file):
             os.remove(audio_file)
 
+async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Укажите URL YouTube видео: /download <url>")
+        return
+
+    url = context.args[0]
+    if "youtube.com" not in url and "youtu.be" not in url:
+        await update.message.reply_text("Пожалуйста, укажите корректную ссылку на YouTube")
+        return
+
+    progress_message = None
+
+    try:
+        progress_message = await update.message.reply_text("⏳ Начинаю загрузку видео...")
+
+        ydl_opts = {
+            'format': 'bestvideo[height<=480]+bestaudio/best[height<=480]',
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'merge_output_format': 'mp4',
+            'quiet': True,
+            'socket_timeout': 30,
+            'retries': 3,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_path = ydl.prepare_filename(info)
+
+            file_size = os.path.getsize(video_path)
+            if file_size > 50 * 1024 * 1024:
+                raise Exception(f"Видео слишком большое ({file_size // (1024 * 1024)}MB). Макс. 50MB.")
+
+            await progress_message.edit_text("📤 Отправляю видео...")
+
+            # Исправленный вызов без параметра timeout
+            await update.message.reply_video(
+                video=open(video_path, 'rb'),
+                caption=f"🎬 {info.get('title', 'Без названия')}",
+                duration=info.get('duration'),
+                supports_streaming=True
+            )
+
+    except Exception as e:
+        error_msg = f"❌ Ошибка: {str(e)}"
+        if progress_message:
+            await progress_message.edit_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+        print(f"Video download error: {traceback.format_exc()}")
+
+    finally:
+        if 'video_path' in locals() and os.path.exists(video_path):
+            os.remove(video_path)
+        if progress_message:
+            try:
+                await progress_message.delete()
+            except:
+                pass
+
+async def download_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Укажите URL твита с видео: /download_twitter <url>")
+        return
+
+    url = context.args[0]
+    if "twitter.com" not in url and "x.com" not in url:
+        await update.message.reply_text("Пожалуйста, укажите корректную ссылку на Twitter/X")
+        return
+
+    try:
+        msg = await update.message.reply_text("⏳ Скачиваю видео из Twitter...")
+
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'quiet': True,
+            'merge_output_format': 'mp4',
+            'cookiefile': 'cookies.txt',  # Для обхода ограничений (опционально)
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_path = ydl.prepare_filename(info)
+
+            await msg.edit_text("📤 Отправляю видео...")
+            await update.message.reply_video(
+                video=open(video_path, 'rb'),
+                caption=f"🎬 Видео из Twitter\n@{info.get('uploader', 'unknown')}"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        print(f"Twitter download error: {traceback.format_exc()}")
+
+    finally:
+        if 'video_path' in locals() and os.path.exists(video_path):
+            os.remove(video_path)
+        if 'msg' in locals():
+            try:
+                await msg.delete()
+            except:
+                pass
+
+
+async def vk_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Укажите URL плейлиста VK: /vk_playlist <url>")
+        return
+
+    url = context.args[0]
+    if "vk.com" not in url or "audio_playlist" not in url:
+        await update.message.reply_text(
+            "Укажите корректную ссылку на плейлист VK (пример: https://vk.com/audio?section=playlists&z=audio_playlist_12345_56789)")
+        return
+
+    try:
+        msg = await update.message.reply_text("🔍 Получаю информацию о плейлисте...")
+
+        # Настройки для VK
+        ydl_opts = {
+            'extract_flat': True,
+            'dump_single_json': True,
+            'quiet': True,
+            'force_generic_extractor': True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            if not info or not info.get('entries'):
+                await msg.edit_text("❌ Не удалось получить плейлист или плейлист пуст")
+                return
+
+            # Исправленная строка:
+            await msg.edit_text(f"🎵 Найдено треков: {len(info['entries'])}\nНачинаю загрузку...")
+
+            # Загружаем каждый трек
+            for idx, entry in enumerate(info['entries'][:10]):  # Ограничим 10 треками
+                try:
+                    track_info = f"{entry.get('artist', '?')} - {entry.get('title', 'Без названия')}"
+                    await msg.edit_text(f"⏬ [{idx + 1}/{len(info['entries'])}] {track_info}")
+
+                    # Настройки для скачивания аудио
+                    audio_opts = {
+                        'format': 'bestaudio/best',
+                        'outtmpl': f"downloads/{entry['id']}.%(ext)s",
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                        }],
+                    }
+
+                    with yt_dlp.YoutubeDL(audio_opts) as audio_ydl:
+                        audio_info = audio_ydl.extract_info(entry['url'], download=True)
+                        audio_file = audio_ydl.prepare_filename(audio_info).replace('.webm', '.mp3')
+
+                        await update.message.reply_audio(
+                            audio=open(audio_file, 'rb'),
+                            title=entry.get('title'),
+                            performer=entry.get('artist'),
+                        )
+                        os.remove(audio_file)
+
+                except Exception as e:
+                    print(f"Ошибка загрузки трека: {e}")
+                    continue
+
+        await msg.edit_text("✅ Плейлист успешно загружен!")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+    finally:
+        if 'msg' in locals():
+            try:
+                await msg.delete()
+            except:
+                pass
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -482,7 +675,10 @@ def main():
         ("img", img), ("i", img),
         ("translate", translate_text), ("t", translate_text),
         ("donate", donate), ("d", donate),
-        ("play", play_music), ("p", play_music)
+        ("play", play_music), ("p", play_music),
+        ("download", download_video),
+        ("twitter", download_twitter),
+        ("vk_playlist", vk_playlist)
     ]
     for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))
