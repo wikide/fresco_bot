@@ -134,13 +134,11 @@ async def img(update: Update, context: ContextTypes.DEFAULT_TYPE):
         generate_and_notify(prompt, chat_id, context)
     )
 
-async def generate_and_notify(prompt: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE, two=None):
+async def generate_and_notify(prompt: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Фоновая задача: генерирует изображение и отправляет результат."""
     try:
-        if two is None:
-            image_url = await generate_image(prompt, STABLEHORDE_API_KEY)
-        else:
-            image_url = await generate_image2(prompt, STABLEHORDE_API_KEY)
+
+        image_url = await generate_image(prompt, STABLEHORDE_API_KEY)
 
         if image_url.startswith("http"):
             await context.bot.send_photo(chat_id=chat_id, photo=image_url)
@@ -281,61 +279,6 @@ async def generate_image(prompt: str, api_key: str) -> str:
                 return "Изображение не сгенерировано."
             
             return result["generations"][0]["img"]
-
-async def generate_image2(prompt: str, api_key: str) -> str:
-    url = "https://stablehorde.net/api/v2/generate/async"
-    headers = {
-        "Content-Type": "application/json",
-        "apikey": api_key,  # Ваш ключ!
-        "Client-Agent": "my-telegram-bot/1.0"  # Укажите свой клиент
-    }
-
-    payload = {
-        "prompt": prompt,  # Передаём ОДИН чёткий промпт
-        "params": {
-            "width": 640,
-            "height": 320,
-            "steps": 40,  # Увеличили для лучшей детализации
-            "n": 1,
-            "cfg_scale": 10,  # Сильнее следовать промпту (7-12)
-        },
-        "models": ["CyberRealistic", "NeverEnding Dream"]
-    }
-
-    async with aiohttp.ClientSession() as session:
-        # (1) Запускаем генерацию
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 202:
-                error = await resp.text()
-                return f"🚫 Ошибка API: {resp.status} | {error}"
-
-            data = await resp.json()
-            task_id = data["id"]
-
-        # (2) Проверяем статус каждые 5 секунд
-        check_url = f"https://stablehorde.net/api/v2/generate/check/{task_id}"
-        for _ in range(30):  # 30 попыток (~2.5 минуты)
-            await asyncio.sleep(5)
-            async with session.get(check_url, headers=headers) as check_resp:
-                if check_resp.status != 200:
-                    return f"Ошибка проверки статуса: {check_resp.status}"
-
-                status = await check_resp.json()
-                if status["done"]:
-                    break
-
-        # (3) Получаем результат
-        result_url = f"https://stablehorde.net/api/v2/generate/status/{task_id}"
-        async with session.get(result_url, headers=headers) as result_resp:
-            if result_resp.status != 200:
-                return "Ошибка при получении изображения."
-
-            result = await result_resp.json()
-            if not result.get("generations"):
-                return "Изображение не сгенерировано."
-
-            return result["generations"][0]["img"]
-
 
 async def voice_to_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик голосовых сообщений с командами"""
