@@ -12,7 +12,12 @@ import traceback
 import re
 import uuid
 import edge_tts
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    WebAppInfo
+)
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 from pydub import AudioSegment
@@ -41,6 +46,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /img - Сгенерировать изображение проекта Венеры
 /ask [вопрос] - Задать вопрос боту (например: /ask Что такое проект Венеры?)
 /donate - Поддержать разработчика
+/game - Играть в крестики-нолики прямо в Telegram
 
 🎧 *Музыкальные команды:*
 /play [название] - Найти и отправить трек (из YouTube)
@@ -863,6 +869,28 @@ async def get_tracks_from_llm(user_request: str) -> list:
 
     return tracks[:5]  # Берем первые 5 на случай если LLM вернула больше
 
+
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🎮 Играть в крестики-нолики",
+                              web_app=WebAppInfo(url="https://x0.d0h.ru/"))]
+    ]
+
+    await update.message.reply_text(
+        "Нажмите кнопку чтобы начать игру:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = json.loads(update.web_app_data.data)
+        if data.get('action') == 'share':
+            await update.message.reply_text(
+                f"Пользователь поделился результатом:\n{data['score']}"
+            )
+    except Exception as e:
+        print(f"WebApp error: {e}")
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -880,13 +908,15 @@ def main():
         ("tiktok", download_tiktok),
         ("vk_playlist", vk_playlist),
         ("say", send_voice_message),
-        ("find", find_music)
+        ("find", find_music),
+        ("game", start_game)
     ]
     for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))
 
     # Обработчики сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     application.add_handler(MessageHandler(filters.VOICE, voice_to_text_handler))
 
     application.run_polling()
