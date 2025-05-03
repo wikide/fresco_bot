@@ -56,9 +56,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 Пример: /play Pink Floyd - Time
 
 📹 *Видео команды:*
-/youtube <url> - Скачать видео с YouTube (до 50MB)
-/twitter <url> - видео из Twitter/X
+/youtube <url> - cкачать видео с YouTube (до 50MB)
+/twitter <url> - cкачать видео из Twitter/X
 /tiktok <url> - видео из Tiktok
+/vkclip <url> - скачать клип из vk 
 
 🎤 *Голосовые команды:*
 /say [текст] - Озвучить текст мужским голосом (только аудио)
@@ -385,7 +386,6 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 """
     await update.message.reply_text(donate_text, parse_mode='Markdown')
 
-
 async def play_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Укажите название трека: /play <название>")
@@ -556,6 +556,46 @@ async def download_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
 
+async def download_vk_clip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Сохраняем ID сообщения запроса для последующего удаления
+    request_message = update.message
+
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите URL клипа VK\nПример: /vkclip https://vk.com/clip-222106755_456254140")
+        return
+
+    url = context.args[0]
+    processing_msg = await update.message.reply_text("⏳ Скачиваю клип из VK...")
+
+    try:
+        ydl_opts = {
+            'format': 'best[height<=720]',
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'quiet': True,
+            'extractor_args': {'vk': {'clip': True}}
+        }
+
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+        await processing_msg.edit_text("📤 Отправляю клип...")
+        await request_message.delete()  # Удаляем сообщение с запросом
+
+        await context.bot.send_video(
+            chat_id=update.effective_chat.id,
+            video=open(filename, 'rb'),
+            caption=f"🎬 Клип: {info.get('title', 'Без названия')}",
+            supports_streaming=True
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
+        await processing_msg.delete()
 async def vk_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not context.args:
@@ -691,7 +731,6 @@ async def download_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.delete()
             except:
                 pass
-
 async def send_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Укажите текст после команды\nПример: /voice Привет, как дела?")
@@ -723,7 +762,6 @@ async def send_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             os.remove(voice_file)
         if processing_msg:
             await processing_msg.delete()
-
 async def text_to_speech(text: str) -> str:
     """Синтез мужского голоса через edge-tts"""
     filename = f"voice_{uuid.uuid4()}.mp3"
@@ -739,7 +777,6 @@ async def text_to_speech(text: str) -> str:
         if os.path.exists(filename):
             os.remove(filename)
         raise RuntimeError(f"Ошибка синтеза голоса: {e}")
-
 async def find_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Укажите описание музыки\nПример: /find грустный джаз для вечера")
@@ -811,8 +848,6 @@ async def get_tracks_from_llm(user_request: str) -> list:
         raise ValueError("Не удалось распознать треки в ответе")
 
     return tracks[:5]  # Берем первые 5 на случай если LLM вернула больше
-
-
 async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🎮 Играть в крестики-нолики",
@@ -852,7 +887,8 @@ def main():
         ("vk_playlist", vk_playlist),
         ("say", send_voice_message),
         ("find", find_music),
-        ("game", start_game)
+        ("game", start_game),
+        ("vkclip", download_vk_clip)
     ]
     for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))
