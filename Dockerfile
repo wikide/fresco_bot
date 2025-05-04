@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     ffmpeg \
     git \
+    flac  \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем рабочую директорию
